@@ -423,14 +423,21 @@
   $("prev").onclick=()=>{cursor=new Date(cursor.getFullYear(),cursor.getMonth()-1,1);render()};
   $("next").onclick=()=>{cursor=new Date(cursor.getFullYear(),cursor.getMonth()+1,1);render()};
 
-  $("payday").addEventListener("change",e=>{
+  // сохраняем на каждый символ: событие change срабатывает только при
+  // потере фокуса, и введённая сумма терялась, если из поля не выйти
+  $("payday").addEventListener("input",e=>{
+    const v=Number(e.target.value);
+    if(!(v>=1&&v<=31))return;
+    D.payday=v;save();render();
+  });
+  $("payday").addEventListener("blur",e=>{
     D.payday=Math.min(31,Math.max(1,Number(e.target.value)||1));
     e.target.value=D.payday;save();render();
   });
-  $("startBal").addEventListener("change",e=>{
+  $("startBal").addEventListener("input",e=>{
     D.startBal=digits(e.target.value);save();render();
   });
-  $("cushion").addEventListener("change",e=>{
+  $("cushion").addEventListener("input",e=>{
     D.cushion=digits(e.target.value);save();render();
   });
 

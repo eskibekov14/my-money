@@ -277,9 +277,11 @@
     $("today").textContent=t.getDate()+" "+MN[t.getMonth()];
 
     const h=horizon(), bal=balance(), free=bal-h.locked-(D.cushion||0);
-    const perDay=free/h.days;
     const spentToday=D.entries.filter(e=>e.type==="out"&&e.date===iso(t))
                               .reduce((a,e)=>a+e.amount,0);
+    // лимит считаем от суммы, которая была утром, иначе траты этого дня
+    // вычитаются дважды: и из остатка, и из самого лимита
+    const perDay=(free+spentToday)/h.days;
     const left=perDay-spentToday;
 
     $("dayLeft").textContent=fmt(left);

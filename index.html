@@ -75,6 +75,10 @@
   .fixed .when{font-size:12.5px;color:var(--dim)}
   .fixed .v{font-family:"IBM Plex Mono",monospace;font-weight:500;white-space:nowrap}
   .fixed .soon .v{color:var(--alarm)}
+  .fixed .right{display:flex;align-items:center;gap:8px;white-space:nowrap}
+  .fixed .paid{background:transparent;border:1.5px solid var(--money);color:var(--money);
+    font:inherit;font-size:13px;font-weight:600;padding:4px 10px;cursor:pointer}
+  .fixed .paid:hover{background:var(--money);color:var(--paper)}
   .addfix{display:grid;grid-template-columns:1fr 110px 88px auto;gap:8px}
   .addfix button{background:var(--ink);color:var(--paper);border:none;padding:0 14px;
     font:inherit;font-weight:600;cursor:pointer}
@@ -116,6 +120,7 @@
   .acts button:hover{border-color:var(--ink)}
   .bhint{margin:0 0 10px;font-size:13.5px}
   .bhint.warn{color:var(--alarm)}
+  .ver{margin:16px 0 0;font-size:12px;color:var(--rule)}
   @media(max-width:460px){.grid{grid-template-columns:1fr}
     .addfix{grid-template-columns:1fr 1fr;}
     .addfix button{grid-column:1/-1;padding:10px}}
@@ -205,6 +210,7 @@
       <button id="wipe">Стереть всё</button>
     </div>
     <input id="restoreFile" type="file" accept=".json,application/json" hidden>
+    <p class="ver">версия от 9 сентября 2026</p>
   </div>
 </div>
 
@@ -213,7 +219,7 @@
   const MN=["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
   const MNC=["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
   const CATS={
-    out:["Продукты","Кафе и доставка","Транспорт","Жильё и коммуналка","Связь и подписки",
+    out:["Продукты","Кафе и доставка","Транспорт","Жильё и коммуналка","Обязательные платежи","Связь и подписки",
          "Здоровье","Одежда","Развлечения","Дети","Подарки","Учёба","Прочее"],
     in :["Зарплата","Подработка","Возврат","Подарок","Прочее"]
   };
@@ -254,13 +260,19 @@
       d=new Date(n.getFullYear(),n.getMonth(),Math.min(day,l2));}
     return d;
   }
+  function isPaid(f,at){
+    const k=ym(iso(at));
+    return D.entries.some(e=>e.type==="out"&&e.note===f.name&&ym(e.date)===k);
+  }
   function horizon(){
     const t=new Date();t.setHours(0,0,0,0);
     const pay=nextDate(D.payday);
     const days=Math.max(1,Math.round((pay-t)/86400000));
-    const upcoming=D.fixed.map(f=>({...f,at:nextDate(f.day)})).filter(f=>f.at<=pay);
+    const all=D.fixed.map(f=>{const at=nextDate(f.day);
+      return{...f,at,paid:isPaid(f,at),soon:at<=pay}});
+    const upcoming=all.filter(f=>f.soon&&!f.paid);
     const locked=upcoming.reduce((a,f)=>a+f.amount,0);
-    return{pay,days,upcoming,locked};
+    return{pay,days,all,upcoming,locked};
   }
   function monthAgg(key){
     let inc=0,exp=0;const cats={};
@@ -330,14 +342,24 @@
       $("fixList").innerHTML='<p class="empty">Добавьте аренду, кредит, интернет, подписки — то, что уходит каждый месяц в одно и то же число. Эти деньги перестанут считаться свободными.</p>';
       return;
     }
-    const soon=new Set(h.upcoming.map(f=>f.id));
-    $("fixList").innerHTML=[...D.fixed].sort((a,b)=>a.day-b.day).map(f=>
-      '<li class="'+(soon.has(f.id)?"soon":"")+'"><span>'+esc(f.name)+
-      '<span class="when"> · '+f.day+" числа"+(soon.has(f.id)?", ещё не прошло":"")+'</span></span>'+
-      '<span><span class="v">'+fmt(f.amount)+'</span> '+
-      '<button class="del" data-f="'+f.id+'" aria-label="Удалить">×</button></span></li>').join("");
+    $("fixList").innerHTML=[...h.all].sort((a,b)=>a.day-b.day).map(f=>{
+      const when = f.paid ? "оплачено, из свободных не вычитается"
+                 : f.soon ? f.day+" числа, уже вычтено из свободных"
+                 : f.day+" числа, после зарплаты";
+      return '<li class="'+(f.soon&&!f.paid?"soon":"")+'">'+
+        '<span>'+esc(f.name)+'<span class="when"> · '+when+'</span></span>'+
+        '<span class="right"><span class="v">'+fmt(f.amount)+'</span>'+
+        (f.soon&&!f.paid?'<button class="paid" data-p="'+f.id+'">Оплатил</button>':'')+
+        '<button class="del" data-f="'+f.id+'" aria-label="Удалить">×</button></span></li>';
+    }).join("");
     $("fixList").querySelectorAll(".del").forEach(b=>b.onclick=()=>{
       D.fixed=D.fixed.filter(x=>x.id!=b.dataset.f);save();render();
+    });
+    $("fixList").querySelectorAll(".paid").forEach(b=>b.onclick=()=>{
+      const f=D.fixed.find(x=>x.id==b.dataset.p);if(!f)return;
+      D.entries.push({id:Date.now(),type:"out",amount:f.amount,
+        cat:"Обязательные платежи",date:iso(new Date()),note:f.name});
+      save();render();
     });
   }
 

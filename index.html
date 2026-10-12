@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Мои деньги</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -71,8 +71,10 @@
   section{margin-bottom:28px}
   .fixed li{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
     padding:8px 0;border-bottom:1px solid var(--rule);font-size:15px}
+  .fixed li.empty{display:block;border:none;padding:0}
   .fixed ul{list-style:none;margin:0 0 12px;padding:0}
   .fixed .when{font-size:12.5px;color:var(--dim)}
+  .fixed .late .when{color:var(--alarm)}
   .fixed .v{font-family:"IBM Plex Mono",monospace;font-weight:500;white-space:nowrap}
   .fixed .soon .v{color:var(--alarm)}
   .fixed .right{display:flex;align-items:center;gap:8px;white-space:nowrap}
@@ -168,7 +170,7 @@
     <div class="addfix">
       <input id="fName" type="text" placeholder="Аренда, кредит, интернет…" autocomplete="off">
       <input id="fAmt" type="text" inputmode="numeric" placeholder="Сумма" autocomplete="off">
-      <input id="fDay" type="number" min="1" max="31" placeholder="Число">
+      <input id="fDay" type="number" min="1" max="31" step="1" inputmode="numeric" placeholder="Число">
       <button id="fAdd">Добавить</button>
     </div>
   </section>
@@ -199,7 +201,7 @@
   </section>
 
   <div class="settings">
-    <label>Зарплата приходит <input id="payday" type="number" min="1" max="31" style="width:70px"> числа</label>
+    <label>Зарплата приходит <input id="payday" type="number" min="1" max="31" step="1" inputmode="numeric" style="width:70px"> числа</label>
     <label>Было на счетах до первой записи <input id="startBal" type="text" inputmode="numeric"></label>
     <label>Не трогать неприкосновенный запас <input id="cushion" type="text" inputmode="numeric"></label>
     <p id="backupHint" class="bhint"></p>
@@ -210,14 +212,17 @@
       <button id="wipe">Стереть всё</button>
     </div>
     <input id="restoreFile" type="file" accept=".json,application/json" hidden>
-    <p class="ver">версия от 9 сентября 2026</p>
+    <p class="ver">версия от 12 октября 2026</p>
   </div>
 </div>
 
 <script>
 (function(){
-  const MN=["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
+  "use strict";
+  const MN =["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
   const MNC=["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+  const MNG=["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+  const MNP=["январе","феврале","марте","апреле","мае","июне","июле","августе","сентябре","октябре","ноябре","декабре"];
   const CATS={
     out:["Продукты","Кафе и доставка","Транспорт","Жильё и коммуналка","Обязательные платежи","Связь и подписки",
          "Здоровье","Одежда","Развлечения","Дети","Подарки","Учёба","Прочее"],
@@ -225,58 +230,117 @@
   };
   const QUICK=["Продукты","Кафе и доставка","Транспорт","Развлечения"];
   const KEY="dengi:v1";
+  const FIXCAT="Обязательные платежи";
+  const DEF=()=>({entries:[],fixed:[],payday:10,startBal:0,cushion:0,lastBackup:null});
 
   const store={
     async get(){
-      if(window.storage){try{const r=await window.storage.get(KEY);return r?JSON.parse(r.value):null}catch(e){}}
+      if(window.storage){try{const r=await window.storage.get(KEY);if(r&&r.value)return JSON.parse(r.value)}catch(e){}}
       try{const v=localStorage.getItem(KEY);return v?JSON.parse(v):null}catch(e){return null}
     },
-    async set(d){
-      if(window.storage){try{await window.storage.set(KEY,JSON.stringify(d));return}catch(e){}}
-      try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}
+    async set(json){
+      if(window.storage){try{if(await window.storage.set(KEY,json))return true}catch(e){}}
+      try{localStorage.setItem(KEY,json);return true}catch(e){return false}
     }
   };
 
-  let D={entries:[],fixed:[],payday:10,startBal:0,cushion:0,lastBackup:null}, kind="out", cursor=new Date();
+  let D=DEF(), kind="out", cursor=new Date(), ready=false, storageOk=true, lastId=0,
+      chain=Promise.resolve(), lastDay="";
   const $=id=>document.getElementById(id);
-  const fmt=n=>(n<0?"−":"")+Math.abs(Math.round(n)).toLocaleString("ru-RU")+" ₸";
+  const fmt=n=>{const r=Math.round(n)||0;return(r<0?"−":"")+Math.abs(r).toLocaleString("ru-RU")+" ₸"};
   const digits=s=>Number(String(s).replace(/\D/g,""))||0;
   const iso=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
   const ym=s=>s.slice(0,7);
-  const save=()=>store.set(D);
-  const esc=s=>String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
+  const mkey=d=>iso(d).slice(0,7);
+  const esc=s=>String(s).replace(/[<>&"']/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;","'":"&#39;"}[c]));
+  const uid=()=>(lastId=Math.max(Date.now(),lastId+1));
+  const today=()=>{const t=new Date();t.setHours(0,0,0,0);return t};
+  const dim=(y,m)=>new Date(y,m+1,0).getDate();
+  // дата с числом day в месяце m (m может выходить за 0..11), с поправкой на короткие месяцы
+  const dayIn=(y,m,day)=>{const f=new Date(y,m,1);
+    return new Date(f.getFullYear(),f.getMonth(),Math.min(day,dim(f.getFullYear(),f.getMonth())))};
+  const dateLabel=d=>d.getDate()+" "+MNG[d.getMonth()];
+  const ISO_RE=/^\d{4}-\d{2}-\d{2}$/;
+
+  // записи идут строго по очереди, чтобы медленный ответ хранилища
+  // не перезаписал свежие данные старыми; до загрузки не пишем вовсе
+  function save(){
+    if(!ready)return;
+    const json=JSON.stringify(D);
+    chain=chain.then(()=>store.set(json)).then(ok=>{if(ok!==storageOk){storageOk=ok;backupHint()}});
+  }
+
+  // приводим данные из хранилища или копии к правильному виду
+  function normalize(o){
+    const d=DEF();
+    const int=v=>{const n=Math.round(Number(v));return Number.isFinite(n)?n:0};
+    const day=v=>{const n=Number(v);return Number.isInteger(n)&&n>=1&&n<=31?n:null};
+    const raw=o&&typeof o==="object"?o:{};
+    const ents=(Array.isArray(raw.entries)?raw.entries:[])
+      .filter(e=>e&&ISO_RE.test(e.date)&&int(e.amount)>0);
+    const fx=(Array.isArray(raw.fixed)?raw.fixed:[])
+      .filter(f=>f&&String(f.name||"").trim()&&int(f.amount)>0&&day(f.day));
+    [...ents,...fx].forEach(x=>{const n=int(x.id);if(n>lastId)lastId=n});
+    let seen=new Set();
+    const fid=x=>{let n=int(x.id);if(n<=0||seen.has(n))n=uid();seen.add(n);return n};
+    d.entries=ents.map(e=>{
+      const r={id:fid(e),type:e.type==="in"?"in":"out",amount:int(e.amount),
+        cat:String(e.cat||"Прочее"),date:e.date,note:String(e.note||"")};
+      if(e.fixId!=null&&int(e.fixId))r.fixId=int(e.fixId);
+      if(/^\d{4}-\d{2}$/.test(e.period))r.period=e.period;
+      return r;
+    });
+    seen=new Set();
+    d.fixed=fx.map(f=>({id:fid(f),name:String(f.name).trim(),amount:int(f.amount),
+      day:day(f.day),created:int(f.created)||int(f.id)}));
+    d.payday=day(raw.payday)||10;
+    d.startBal=int(raw.startBal);
+    d.cushion=Math.max(0,int(raw.cushion));
+    d.lastBackup=int(raw.lastBackup)||null;
+    return d;
+  }
 
   /* ---------- расчёты ---------- */
   function balance(){
-    return D.entries.reduce((a,e)=>a+(e.type==="in"?e.amount:-e.amount),D.startBal||0);
+    // приход с будущей датой ещё не на счету; будущие траты вычитаем сразу — так осторожнее
+    const ti=iso(today());
+    return D.entries.reduce((a,e)=>e.type==="in"?(e.date<=ti?a+e.amount:a):a-e.amount,D.startBal);
   }
-  // ближайшая дата с числом day, начиная с сегодня (включительно)
-  function nextDate(day){
-    const t=new Date();t.setHours(0,0,0,0);
-    const last=new Date(t.getFullYear(),t.getMonth()+1,0).getDate();
-    let d=new Date(t.getFullYear(),t.getMonth(),Math.min(day,last));
-    if(d<t){const n=new Date(t.getFullYear(),t.getMonth()+1,1);
-      const l2=new Date(n.getFullYear(),n.getMonth()+1,0).getDate();
-      d=new Date(n.getFullYear(),n.getMonth(),Math.min(day,l2));}
+  // ближайшая дата с числом day; strict — строго после сегодня
+  function nextDate(day,strict){
+    const t=today();
+    let d=dayIn(t.getFullYear(),t.getMonth(),day);
+    if(strict?d<=t:d<t)d=dayIn(t.getFullYear(),t.getMonth()+1,day);
     return d;
   }
+  // оплачен ли платёж f за месяц, в который попадает дата at
   function isPaid(f,at){
-    const k=ym(iso(at));
-    return D.entries.some(e=>e.type==="out"&&e.note===f.name&&ym(e.date)===k);
+    const k=mkey(at);
+    return D.entries.some(e=>e.type==="out"&&(e.fixId===f.id||e.note===f.name)&&(e.period||ym(e.date))===k);
   }
   function horizon(){
-    const t=new Date();t.setHours(0,0,0,0);
-    const pay=nextDate(D.payday);
-    const days=Math.max(1,Math.round((pay-t)/86400000));
-    const all=D.fixed.map(f=>{const at=nextDate(f.day);
-      return{...f,at,paid:isPaid(f,at),soon:at<=pay}});
-    const upcoming=all.filter(f=>f.soon&&!f.paid);
-    const locked=upcoming.reduce((a,f)=>a+f.amount,0);
-    return{pay,days,all,upcoming,locked};
+    const t=today();
+    const pay=nextDate(D.payday,true);
+    const days=Math.max(1,Math.round((pay-t)/864e5));
+    const all=D.fixed.map(f=>{
+      const created=new Date(f.created||0);created.setHours(0,0,0,0);
+      const cur=dayIn(t.getFullYear(),t.getMonth(),f.day);
+      const next=nextDate(f.day,false);
+      const due=[];
+      // срок в этом месяце прошёл, а оплата не отмечена — деньги всё ещё нужны
+      if(cur<t&&cur>=created&&!isPaid(f,cur))due.push({at:cur,late:true});
+      const nextPaid=isPaid(f,next);
+      if(!nextPaid&&next<=pay)due.push({at:next,late:false});
+      return{...f,due,next,nextPaid};
+    });
+    const locked=all.reduce((a,f)=>a+f.amount*f.due.length,0);
+    return{pay,days,all,locked};
   }
-  function monthAgg(key){
+  function monthAgg(key,uptoDay){
     let inc=0,exp=0;const cats={};
-    D.entries.filter(e=>ym(e.date)===key).forEach(e=>{
+    D.entries.forEach(e=>{
+      if(ym(e.date)!==key)return;
+      if(uptoDay&&Number(e.date.slice(8))>uptoDay)return;
       if(e.type==="in")inc+=e.amount;
       else{exp+=e.amount;cats[e.cat]=(cats[e.cat]||0)+e.amount}
     });
@@ -285,51 +349,61 @@
 
   /* ---------- отрисовка ---------- */
   function render(){
-    const t=new Date(); t.setHours(0,0,0,0);
-    $("today").textContent=t.getDate()+" "+MN[t.getMonth()];
+    const t=today(), ti=iso(t);
+    lastDay=ti;
+    $("today").textContent=dateLabel(t);
 
-    const h=horizon(), bal=balance(), free=bal-h.locked-(D.cushion||0);
-    const spentToday=D.entries.filter(e=>e.type==="out"&&e.date===iso(t))
-                              .reduce((a,e)=>a+e.amount,0);
+    const h=horizon(), free=balance()-h.locked-D.cushion;
+    // обязательные платежи не тратят дневной лимит: они уже были вычтены из свободных
+    const spentToday=D.entries
+      .filter(e=>e.type==="out"&&e.date===ti&&e.cat!==FIXCAT&&e.fixId==null)
+      .reduce((a,e)=>a+e.amount,0);
     // лимит считаем от суммы, которая была утром, иначе траты этого дня
     // вычитаются дважды: и из остатка, и из самого лимита
     const perDay=(free+spentToday)/h.days;
     const left=perDay-spentToday;
 
     $("dayLeft").textContent=fmt(left);
-    $("dayLeft").classList.toggle("neg",left<0);
-    $("heroLabel").textContent = spentToday>0
+    $("dayLeft").classList.toggle("neg",Math.round(left)<0);
+    $("heroLabel").textContent=spentToday>0
       ? "Осталось на сегодня — из "+fmt(perDay)+", потрачено "+fmt(spentToday)
       : "Можно потратить сегодня";
     const g=$("gauge");
     const used=perDay>0?Math.min(100,spentToday/perDay*100):100;
-    g.style.width=used+"%"; g.classList.toggle("over",left<0);
+    g.style.width=used+"%";
+    g.classList.toggle("over",left<0||perDay<=0);
 
     $("free").textContent=fmt(free);
     $("locked").textContent=fmt(h.locked);
     $("days").textContent=h.days===1?"завтра":h.days;
-    $("cush").textContent=fmt(D.cushion||0);
+    $("cush").textContent=fmt(D.cushion);
 
-    const key=cursor.getFullYear()+"-"+String(cursor.getMonth()+1).padStart(2,"0");
-    const m=monthAgg(key);
+    const key=mkey(cursor), m=monthAgg(key);
     $("mlabel").textContent=MNC[cursor.getMonth()]+" "+cursor.getFullYear();
     $("mIn").textContent=fmt(m.inc);
     $("mOut").textContent=fmt(m.exp);
     $("mNet").textContent=fmt(m.net);
     $("mNet").style.color=m.net<0?"var(--alarm)":"var(--ink)";
 
-    const p=new Date(cursor.getFullYear(),cursor.getMonth()-1,1);
-    const pm=monthAgg(p.getFullYear()+"-"+String(p.getMonth()+1).padStart(2,"0"));
-    $("delta").textContent=(pm.exp||pm.inc)
-      ? "Против "+MN[p.getMonth()]+"я: тратите "+(m.exp>=pm.exp?"больше на ":"меньше на ")+
-        fmt(Math.abs(m.exp-pm.exp))+"."
-      : "";
+    // текущий месяц ещё не закончился, поэтому сравниваем с тем же числом прошлого
+    const p=new Date(cursor.getFullYear(),cursor.getMonth()-1,1), pk=mkey(p), pm=monthAgg(pk);
+    let dt="";
+    if(pm.exp||pm.inc){
+      const isCur=key===mkey(t);
+      const prevExp=isCur?monthAgg(pk,t.getDate()).exp:pm.exp;
+      const curExp=isCur?monthAgg(key,t.getDate()).exp:m.exp;
+      const diff=Math.round(curExp-prevExp);
+      dt=(isCur?"За то же время в "+MNP[p.getMonth()]:"В "+MNP[p.getMonth()])+" потрачено "+fmt(prevExp)+
+        (diff===0?" — столько же."
+          :", "+(isCur?"сейчас":"в "+MNP[cursor.getMonth()])+" на "+fmt(Math.abs(diff))+(diff>0?" больше.":" меньше."));
+    }
+    $("delta").textContent=dt;
 
     const arr=Object.entries(m.cats).sort((a,b)=>b[1]-a[1]);
     const max=arr.length?arr[0][1]:1;
     $("cats").innerHTML=arr.length
       ? "<h2>На что уходят деньги</h2>"+arr.map(([c,v])=>
-          '<div class="catrow"><span>'+c+'</span><span class="v">'+fmt(v)+
+          '<div class="catrow"><span>'+esc(c)+'</span><span class="v">'+fmt(v)+
           ' · '+Math.round(v/m.exp*100)+'%</span>'+
           '<span class="catbar"><i style="width:'+(v/max*100)+'%"></i></span></div>').join("")
       : '<p class="empty">В этом месяце трат пока нет.</p>';
@@ -339,37 +413,46 @@
 
   function fixList(h){
     if(!D.fixed.length){
-      $("fixList").innerHTML='<p class="empty">Добавьте аренду, кредит, интернет, подписки — то, что уходит каждый месяц в одно и то же число. Эти деньги перестанут считаться свободными.</p>';
+      $("fixList").innerHTML='<li class="empty">Добавьте аренду, кредит, интернет, подписки — то, что уходит каждый месяц в одно и то же число. Эти деньги перестанут считаться свободными.</li>';
       return;
     }
     $("fixList").innerHTML=[...h.all].sort((a,b)=>a.day-b.day).map(f=>{
-      const when = f.paid ? "оплачено, из свободных не вычитается"
-                 : f.soon ? f.day+" числа, уже вычтено из свободных"
-                 : f.day+" числа, после зарплаты";
-      return '<li class="'+(f.soon&&!f.paid?"soon":"")+'">'+
+      const d0=f.due[0];
+      let when;
+      if(d0&&d0.late)when="срок был "+dateLabel(d0.at)+", оплата не отмечена — вычтено из свободных";
+      else if(d0)when=dateLabel(d0.at)+", уже вычтено из свободных";
+      else if(f.nextPaid)when="оплачено, из свободных не вычитается";
+      else when=dateLabel(f.next)+", после зарплаты";
+      if(f.due.length>1)when+="; следующий, "+dateLabel(f.due[1].at)+", тоже до зарплаты";
+      const cls=d0?(d0.late?"soon late":"soon"):"";
+      return '<li class="'+cls+'">'+
         '<span>'+esc(f.name)+'<span class="when"> · '+when+'</span></span>'+
-        '<span class="right"><span class="v">'+fmt(f.amount)+'</span>'+
-        (f.soon&&!f.paid?'<button class="paid" data-p="'+f.id+'">Оплатил</button>':'')+
+        '<span class="right"><span class="v">'+fmt(f.amount)+(f.due.length>1?" ×2":"")+'</span>'+
+        (d0?'<button class="paid" data-p="'+f.id+'">Оплатил</button>':'')+
         '<button class="del" data-f="'+f.id+'" aria-label="Удалить">×</button></span></li>';
     }).join("");
     $("fixList").querySelectorAll(".del").forEach(b=>b.onclick=()=>{
-      D.fixed=D.fixed.filter(x=>x.id!=b.dataset.f);save();render();
+      const f=D.fixed.find(x=>x.id==b.dataset.f);if(!f)return;
+      if(!confirm("Удалить платёж «"+f.name+"»? Уже записанные оплаты останутся."))return;
+      D.fixed=D.fixed.filter(x=>x.id!==f.id);save();render();
     });
     $("fixList").querySelectorAll(".paid").forEach(b=>b.onclick=()=>{
-      const f=D.fixed.find(x=>x.id==b.dataset.p);if(!f)return;
-      D.entries.push({id:Date.now(),type:"out",amount:f.amount,
-        cat:"Обязательные платежи",date:iso(new Date()),note:f.name});
+      const f=h.all.find(x=>x.id==b.dataset.p);if(!f||!f.due.length)return;
+      D.entries.push({id:uid(),type:"out",amount:f.amount,cat:FIXCAT,date:iso(new Date()),
+        note:f.name,fixId:f.id,period:mkey(f.due[0].at)});
       save();render();
     });
   }
 
   function chart(){
-    const keys=[];
+    const data=[];
     for(let i=5;i>=0;i--){
       const d=new Date(cursor.getFullYear(),cursor.getMonth()-i,1);
-      keys.push([d,d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")]);
+      data.push({d,...monthAgg(mkey(d))});
     }
-    const data=keys.map(([d,k])=>({d,...monthAgg(k)}));
+    if(!data.some(x=>x.inc||x.exp)){
+      $("chart").innerHTML='<p class="empty">За эти месяцы записей нет.</p>';return;
+    }
     const max=Math.max(1,...data.map(x=>Math.max(x.inc,x.exp)));
     const W=660,H=165,pad=20,bw=(W-pad*2)/6;
     let s='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Приход и траты за полгода">';
@@ -396,7 +479,9 @@
       '<td style="width:28px"><button class="del" data-id="'+e.id+'" aria-label="Удалить">×</button></td></tr>'
     ).join("")+"</table>";
     $("list").querySelectorAll(".del").forEach(b=>b.onclick=()=>{
-      D.entries=D.entries.filter(x=>x.id!=b.dataset.id);save();render();
+      const e=D.entries.find(x=>x.id==b.dataset.id);if(!e)return;
+      if(!confirm("Удалить запись «"+e.cat+", "+fmt(e.amount)+"» от "+e.date.split("-").reverse().join(".")+"?"))return;
+      D.entries=D.entries.filter(x=>x.id!==e.id);save();render();
     });
   }
 
@@ -417,16 +502,24 @@
     setKind("out");$("cat").value=b.dataset.c;$("amount").focus();
   });
 
-  ["amount","fAmt","startBal","cushion"].forEach(id=>$(id).addEventListener("input",e=>{
-    const r=e.target.value.replace(/\D/g,"");
-    e.target.value=r?Number(r).toLocaleString("ru-RU"):"";
-  }));
+  // форматируем сумму с пробелами и оставляем курсор на том же месте,
+  // чтобы можно было исправить цифру в середине
+  function fmtInput(el){
+    const pos=el.selectionStart==null?el.value.length:el.selectionStart;
+    const before=el.value.slice(0,pos).replace(/\D/g,"").length;
+    const r=el.value.replace(/\D/g,"").replace(/^0+(?=\d)/,"");
+    el.value=r?Number(r).toLocaleString("ru-RU"):"";
+    let i=0,c=0;
+    while(i<el.value.length&&c<before){if(/\d/.test(el.value[i]))c++;i++}
+    try{if(document.activeElement===el)el.setSelectionRange(i,i)}catch(e){}
+  }
+  ["amount","fAmt","startBal","cushion"].forEach(id=>$(id).addEventListener("input",e=>fmtInput(e.target)));
 
   function add(){
     const a=digits($("amount").value);
     if(a<=0){$("amount").focus();return}
-    const d=$("date").value||iso(new Date());
-    D.entries.push({id:Date.now(),type:kind,amount:a,cat:$("cat").value,date:d,note:$("note").value.trim()});
+    const d=ISO_RE.test($("date").value)?$("date").value:iso(new Date());
+    D.entries.push({id:uid(),type:kind,amount:a,cat:$("cat").value,date:d,note:$("note").value.trim()});
     $("amount").value="";$("note").value="";
     cursor=new Date(d+"T12:00:00");
     save();render();$("amount").focus();
@@ -434,13 +527,17 @@
   $("save").onclick=add;
   ["amount","note"].forEach(id=>$(id).addEventListener("keydown",e=>{if(e.key==="Enter")add()}));
 
-  $("fAdd").onclick=()=>{
+  function addFixed(){
     const n=$("fName").value.trim(),a=digits($("fAmt").value),d=Number($("fDay").value);
-    if(!n||a<=0||!(d>=1&&d<=31)){$("fName").focus();return}
-    D.fixed.push({id:Date.now(),name:n,amount:a,day:d});
+    if(!n){$("fName").focus();return}
+    if(a<=0){$("fAmt").focus();return}
+    if(!Number.isInteger(d)||d<1||d>31){$("fDay").focus();return}
+    D.fixed.push({id:uid(),name:n,amount:a,day:d,created:Date.now()});
     $("fName").value="";$("fAmt").value="";$("fDay").value="";
     save();render();
-  };
+  }
+  $("fAdd").onclick=addFixed;
+  ["fName","fAmt","fDay"].forEach(id=>$(id).addEventListener("keydown",e=>{if(e.key==="Enter")addFixed()}));
 
   $("prev").onclick=()=>{cursor=new Date(cursor.getFullYear(),cursor.getMonth()-1,1);render()};
   $("next").onclick=()=>{cursor=new Date(cursor.getFullYear(),cursor.getMonth()+1,1);render()};
@@ -449,85 +546,115 @@
   // потере фокуса, и введённая сумма терялась, если из поля не выйти
   $("payday").addEventListener("input",e=>{
     const v=Number(e.target.value);
-    if(!(v>=1&&v<=31))return;
+    if(!Number.isInteger(v)||v<1||v>31)return;
     D.payday=v;save();render();
   });
   $("payday").addEventListener("blur",e=>{
-    D.payday=Math.min(31,Math.max(1,Number(e.target.value)||1));
+    const raw=e.target.value.trim(), v=Number(raw);
+    // пустое или нечисловое поле — возвращаем прежнее значение, а не 1
+    if(raw!==""&&Number.isFinite(v))D.payday=Math.min(31,Math.max(1,Math.round(v)));
     e.target.value=D.payday;save();render();
   });
-  $("startBal").addEventListener("input",e=>{
-    D.startBal=digits(e.target.value);save();render();
-  });
-  $("cushion").addEventListener("input",e=>{
-    D.cushion=digits(e.target.value);save();render();
-  });
+  $("startBal").addEventListener("input",e=>{D.startBal=digits(e.target.value);save();render()});
+  $("cushion").addEventListener("input",e=>{D.cushion=digits(e.target.value);save();render()});
+
+  function syncInputs(){
+    $("payday").value=D.payday;
+    $("startBal").value=D.startBal?D.startBal.toLocaleString("ru-RU"):"";
+    $("cushion").value=D.cushion?D.cushion.toLocaleString("ru-RU"):"";
+  }
 
   function backupHint(){
     const el=$("backupHint");
+    if(!storageOk){
+      el.textContent="Браузер не даёт сохранять данные (например, в приватном режиме) — записи пропадут после закрытия. Сохраните копию.";
+      el.className="bhint warn";return;
+    }
     if(!D.entries.length){el.textContent="";el.className="bhint";return}
     if(!D.lastBackup){
       el.textContent="Копию вы ещё не сохраняли. История живёт только в этом браузере.";
       el.className="bhint warn";return;
     }
-    const days=Math.floor((Date.now()-D.lastBackup)/86400000);
+    const days=Math.floor((Date.now()-D.lastBackup)/864e5);
     el.textContent=days<1?"Копия сохранена сегодня.":"Последняя копия — "+days+" дн. назад.";
     el.className="bhint"+(days>30?" warn":"");
   }
 
-  function download(name,text,type){
+  // на телефоне отдаём файл через меню «Поделиться» (в приложении с домашнего
+  // экрана iPhone обычная загрузка часто не работает), иначе — обычной загрузкой
+  async function saveFile(name,text,type){
+    const file=new File([text],name,{type});
+    const touch=window.matchMedia&&matchMedia("(pointer:coarse)").matches;
+    if(touch&&navigator.canShare&&navigator.share){
+      let can=false;try{can=navigator.canShare({files:[file]})}catch(e){}
+      if(can){
+        try{await navigator.share({files:[file],title:name});return true}
+        catch(e){if(e&&e.name==="AbortError")return false}
+      }
+    }
     const a=document.createElement("a");
-    a.href=URL.createObjectURL(new Blob([text],{type:type}));
-    a.download=name;a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    a.href=URL.createObjectURL(file);a.download=name;a.style.display="none";
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+    return true;
   }
 
-  $("backup").onclick=()=>{
-    D.lastBackup=Date.now();save();
-    download("moi-dengi-"+iso(new Date())+".json",JSON.stringify(D),"application/json");
-    render();
+  $("backup").onclick=async()=>{
+    const stamp=Date.now();
+    const ok=await saveFile("moi-dengi-"+iso(new Date())+".json",
+      JSON.stringify(Object.assign({},D,{lastBackup:stamp})),"application/json");
+    if(ok){D.lastBackup=stamp;save();render();}
   };
   $("restoreBtn").onclick=()=>$("restoreFile").click();
   $("restoreFile").addEventListener("change",e=>{
-    const f=e.target.files[0];if(!f)return;
+    const f=e.target.files[0];
+    e.target.value=""; // чтобы тот же файл можно было выбрать снова
+    if(!f)return;
     const r=new FileReader();
     r.onload=()=>{
-      try{
-        const o=JSON.parse(r.result);
-        if(!o||!Array.isArray(o.entries))throw 0;
-        if(!confirm("Заменить текущие данные копией от "+
-          (o.lastBackup?new Date(o.lastBackup).toLocaleDateString("ru-RU"):"неизвестной даты")+
-          "? Записей в копии: "+o.entries.length+"."))return;
-        D=Object.assign({entries:[],fixed:[],payday:10,startBal:0,cushion:0,lastBackup:null},o);
-        if(!Array.isArray(D.fixed))D.fixed=[];
-        $("payday").value=D.payday;
-        $("startBal").value=D.startBal?D.startBal.toLocaleString("ru-RU"):"";
-        $("cushion").value=D.cushion?D.cushion.toLocaleString("ru-RU"):"";
-        save();render();
-      }catch(err){alert("Не получилось прочитать файл. Нужен файл копии с расширением .json.")}
-      e.target.value="";
+      let o;
+      try{o=JSON.parse(r.result);if(!o||!Array.isArray(o.entries))throw 0}
+      catch(err){alert("Не получилось прочитать файл. Нужен файл копии с расширением .json.");return}
+      if(!confirm("Заменить текущие данные копией от "+
+        (o.lastBackup?new Date(o.lastBackup).toLocaleDateString("ru-RU"):"неизвестной даты")+
+        "? Записей в копии: "+o.entries.length+"."))return;
+      D=normalize(o);
+      syncInputs();save();render();
     };
+    r.onerror=()=>alert("Не получилось прочитать файл.");
     r.readAsText(f);
   });
 
   $("csv").onclick=()=>{
     const head="Дата;Тип;Категория;Сумма;Комментарий\n";
     const body=[...D.entries].sort((a,b)=>a.date.localeCompare(b.date))
-      .map(e=>[e.date,e.type==="in"?"Приход":"Трата",e.cat,e.amount,(e.note||"").replace(/;/g,",")].join(";")).join("\n");
-    download("moi-dengi.csv","\uFEFF"+head+body,"text/csv;charset=utf-8");
+      .map(e=>[e.date,e.type==="in"?"Приход":"Трата",e.cat,e.amount,(e.note||"").replace(/[;\r\n]/g,",")].join(";")).join("\n");
+    saveFile("moi-dengi-"+iso(new Date())+".csv","\uFEFF"+head+body,"text/csv");
   };
   $("wipe").onclick=()=>{
     if(!confirm("Удалить все записи и платежи? Отменить будет нельзя."))return;
-    D={entries:[],fixed:[],payday:D.payday,startBal:0,cushion:D.cushion,lastBackup:null};save();render();
+    D={entries:[],fixed:[],payday:D.payday,startBal:0,cushion:D.cushion,lastBackup:null};
+    syncInputs();save();render();
   };
+
+  // приложение на телефоне может висеть открытым днями: после полуночи
+  // пересчитываем «сегодня» и переставляем дату в форме
+  function checkDay(){
+    if(!ready)return;
+    const n=iso(new Date());
+    if(n===lastDay)return;
+    if($("date").value===lastDay)$("date").value=n;
+    render();
+  }
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden)checkDay()});
+  window.addEventListener("focus",checkDay);
+  setInterval(checkDay,60000);
 
   (async function(){
     const s=await store.get();
-    if(s&&Array.isArray(s.entries))D=Object.assign(D,s);
-    if(!Array.isArray(D.fixed))D.fixed=[];
-    $("payday").value=D.payday;
-    $("startBal").value=D.startBal?D.startBal.toLocaleString("ru-RU"):"";
-    $("cushion").value=D.cushion?D.cushion.toLocaleString("ru-RU"):"";
+    if(s&&Array.isArray(s.entries))D=normalize(s);
+    ready=true;
+    syncInputs();
     $("date").value=iso(new Date());
     setKind("out");render();
   })();
